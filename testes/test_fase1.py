@@ -1,3 +1,7 @@
+import sys, os
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, ROOT)
+
 import threading
 import time
 import socket
@@ -12,32 +16,35 @@ from fase1.rdt20 import RDT20Sender, RDT20Receiver
 # ==========================
 
 def free_udp_port():
+    """Return an unused UDP port."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind(("127.0.0.1", 0))
-    addr, port = s.getsockname()
+    _, port = s.getsockname()
     s.close()
     return port
 
 
-def run_receiver(receiver: RDT20Receiver):
-    """Run the receiver loop in a thread."""
-    receiver.loop()
+def start_receiver(receiver: RDT20Receiver):
+    """Run receiver loop in a background thread."""
+    t = threading.Thread(target=receiver.loop, daemon=True)
+    t.start()
+    return t
 
 
-# ==========================
-#     TEST 1 — PERFECT CHANNEL
-# ==========================
+# ============================================================================
+# TEST 1 — PERFECT CHANNEL (no corruption, no loss)
+# ============================================================================
 
 def test_rdt20_perfect_channel():
     delivered = []
+
     def app_deliver(data):
         delivered.append(data)
 
-    # No loss, no corruption, near-zero delay
     channel = UnreliableChannel(
         loss_rate=0.0,
         corrupt_rate=0.0,
-        delay_range=(0.001, 0.002)
+        delay_range=(0.001, 0.003)
     )
 
     recv_port = free_udp_port()
@@ -46,31 +53,28 @@ def test_rdt20_perfect_channel():
     receiver = RDT20Receiver(("127.0.0.1", recv_port), app_deliver)
     sender = RDT20Sender(("127.0.0.1", send_port), ("127.0.0.1", recv_port), channel)
 
-    # Run receiver in thread
-    t = threading.Thread(target=run_receiver, args=(receiver,), daemon=True)
-    t.start()
+    start_receiver(receiver)
 
-    # Send 10 messages
     msgs = [f"msg_{i}".encode() for i in range(10)]
     for m in msgs:
         sender.send(m)
 
-    time.sleep(1.0)  # allow delivery
+    time.sleep(0.5)
 
-    assert len(delivered) == 10
     assert delivered == msgs
+    assert len(delivered) == 10
 
 
-# ==========================
-#     TEST 2-4 — CORRUPTION, RETRANSMISSION, DELIVERY VALIDATION
-# ==========================
+# ============================================================================
+# TEST 2 — CORRUPTION ONLY (30% corruption)
+# ============================================================================
 
-def test_rdt20_corrupted_channel():
+def test_rdt20_corruption_only():
     delivered = []
+
     def app_deliver(data):
         delivered.append(data)
 
-    # 30% corruption, no loss
     channel = UnreliableChannel(
         loss_rate=0.0,
         corrupt_rate=0.3,
@@ -83,38 +87,98 @@ def test_rdt20_corrupted_channel():
     receiver = RDT20Receiver(("127.0.0.1", recv_port), app_deliver)
     sender = RDT20Sender(("127.0.0.1", send_port), ("127.0.0.1", recv_port), channel)
 
-    t = threading.Thread(target=run_receiver, args=(receiver,), daemon=True)
-    t.start()
+    start_receiver(receiver)
 
-    msgs = [f"message_{i}".encode() for i in range(10)]
+    msgs = [f"data_{i}".encode() for i in range(10)]
+    for m in msgs:
+        sender.send(m)
 
+    time.sleep(1.0)
+
+    assert delivered == msgs
+    assert len(delivered) == 10
+
+
+# ============================================================================
+# TEST 3 — VERIFY DELIVERY CORRECTNESS
+# ============================================================================
+
+def test_rdt20_delivery_correctness():
+    delivered = []
+
+    def app_deliver(data):
+        delivered.append(data)
+
+    # Moderate corruption to challenge delivery
+    channel = UnreliableChannel(
+        loss_rate=0.0,
+        corrupt_rate=0.25,
+        delay_range=(0.001, 0.005)
+    )
+
+    recv_port = free_udp_port()
+    send_port = free_udp_port()
+
+    receiver = RDT20Receiver(("127.0.0.1", recv_port), app_deliver)
+    sender = RDT20Sender(("127.0.0.1", send_port), ("127.0.0.1", recv_port), channel)
+
+    start_receiver(receiver)
+
+    msgs = [f"packet_{i}".encode() for i in range(10)]
+
+    for m in msgs:
+        sender.send(m)
+
+    time.sleep(1.2)
+
+    assert delivered == msgs
+    assert len(delivered) == 10
+
+
+# ============================================================================
+# TEST 4 — COUNT RETRANSMISSIONS
+# ============================================================================
+
+def test_rdt20_retransmission_count():
+    delivered = []
+
+    def app_deliver(data):
+        delivered.append(data)
+
+    # High corruption to guarantee retransmissions
+    channel = UnreliableChannel(
+        loss_rate=0.0,
+        corrupt_rate=0.3,
+        delay_range=(0.001, 0.008)
+    )
+
+    recv_port = free_udp_port()
+    send_port = free_udp_port()
+
+    receiver = RDT20Receiver(("127.0.0.1", recv_port), app_deliver)
+    sender = RDT20Sender(("127.0.0.1", send_port), ("127.0.0.1", recv_port), channel)
+
+    start_receiver(receiver)
+
+    # Count retransmissions by wrapping channel.send
     retransmissions = 0
-
-    # Patch the sender to count retransmissions externally
     original_send = channel.send
 
     def send_wrapper(packet, dest_socket, dest_addr):
         nonlocal retransmissions
-        # If packet is resent, it means first attempt failed → increment external counter
-        # We detect retransmission when sender sends a packet whose checksum payload
-        # has already been sent before for the same message. But easier: wrap sender loop.
-        original_send(packet, dest_socket, dest_addr)
+        # Every time RDT20Sender sends the same data again → retransmission
+        retransmissions += 1
+        return original_send(packet, dest_socket, dest_addr)
 
     channel.send = send_wrapper
 
-    # Send messages and internally detect retransmissions
+    msgs = [f"msg_{i}".encode() for i in range(10)]
+
     for m in msgs:
-        # Wrap sender send to count retransmissions from NAK loop
-        count_before = getattr(sender, "retransmissions", 0)
         sender.send(m)
-        count_after = getattr(sender, "retransmissions", 0)
-        retransmissions += (count_after - count_before)
 
     time.sleep(1.0)
 
-    # Verify all messages delivered correctly
-    assert len(delivered) == 10
     assert delivered == msgs
-
-    # Ensure retransmissions occurred (likely > 0 due to 30% corruption)
-    assert retransmissions > 0
+    assert len(delivered) == 10
+    assert retransmissions > 10   # must be > number of original sends
