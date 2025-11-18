@@ -1,184 +1,350 @@
-import sys, os
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, ROOT)
-
 import threading
 import time
 import socket
-import pytest
 
 from utils.simulator import UnreliableChannel
 from fase1.rdt20 import RDT20Sender, RDT20Receiver
+from fase1.rdt21 import RDT21Sender, RDT21Receiver, decode_packet
 
-
-# ==========================
 # Utilities
-# ==========================
 
-def free_udp_port():
-    """Return an unused UDP port."""
+# Gets a free socket adress on localhost
+def free_udp_addr():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind(("127.0.0.1", 0))
-    _, port = s.getsockname()
+    s.bind(("localhost", 0))
+    addr = s.getsockname()
     s.close()
-    return port
+    return addr
 
-
-def start_receiver(receiver: RDT20Receiver):
-    """Run receiver loop in a background thread."""
+# Starts the reciever in a new thread
+def start_receiver(receiver):
     t = threading.Thread(target=receiver.loop, daemon=True)
     t.start()
     return t
 
+# Checks if every element in the list of sent messages is on the delivered list
+def contains_all(sent, delivered):
+    delivered_set = set(delivered)
+    for msg in sent:
+        if msg not in delivered_set:
+            return False
+    return True
 
-# ============================================================================
-# TEST 1 — PERFECT CHANNEL (no corruption, no loss)
-# ============================================================================
+# Wraps an UnreliableChannel and ensures that ONLY DATA packets are corrupted
+# This wrapper was necessary because UnreliableChannel does not have the ability
+# to distinguish between DATA, ACK, NAK or any type of packet 
+class DataOnlyCorruptingChannel:
+    def __init__(self, channel, corrupt_rate_for_data):
+        self.base_channel = channel
+        self.corrupt_rate_for_data = corrupt_rate_for_data
 
-def test_rdt20_perfect_channel():
+    def send(self, packet, dest_socket, dest_addr):
+        info = decode_packet(packet)
+
+        if info["type"] == 0:
+            old_corrupt_rate = self.base_channel.corrupt_rate
+            self.base_channel.corrupt_rate = self.corrupt_rate_for_data
+            self.base_channel.send(packet, dest_socket, dest_addr)
+            self.base_channel.corrupt_rate = old_corrupt_rate
+        else:
+            old_corrupt_rate = self.base_channel.corrupt_rate
+            self.base_channel.corrupt_rate = 0.0
+            self.base_channel.send(packet, dest_socket, dest_addr)
+            self.base_channel.corrupt_rate = old_corrupt_rate
+            
+# Wraps an UnreliableChannel and ensures that ONLY ACK packets are corrupted
+# This wrapper was necessary because UnreliableChannel does not have the ability
+# to distinguish between DATA, ACK, NAK or any type of packet 
+class ACKOnlyCorruptingChannel:
+    def __init__(self, channel, corrupt_rate_for_ack):
+        self.base_channel = channel
+        self.corrupt_rate_for_ack = corrupt_rate_for_ack
+
+    def send(self, packet, dest_socket, dest_addr):
+        info = decode_packet(packet)
+        if info["type"] == 1:
+            old_corrupt_rate = self.base_channel.corrupt_rate
+            self.base_channel.corrupt_rate = self.corrupt_rate_for_ack
+            self.base_channel.send(packet, dest_socket, dest_addr)
+            self.base_channel.corrupt_rate = old_corrupt_rate
+        else:
+            old_corrupt_rate = self.base_channel.corrupt_rate
+            self.base_channel.corrupt_rate = 0.0
+            self.base_channel.send(packet, dest_socket, dest_addr)
+            self.base_channel.corrupt_rate = old_corrupt_rate
+
+
+######################### RDT 2.0 TESTS #############################
+
+# TEST 1. Transmitir uma sequência de 10 mensagens com canal perfeito
+
+def test_rdt20_teste_1():
+    
+    # This simulates an upper layer app receiving the data
     delivered = []
-
     def app_deliver(data):
         delivered.append(data)
 
+    # Setup for the channel, receiver(starts in a separate thread) and sender 
     channel = UnreliableChannel(
         loss_rate=0.0,
         corrupt_rate=0.0,
-        delay_range=(0.001, 0.003)
+        delay_range=(0,0)
     )
 
-    recv_port = free_udp_port()
-    send_port = free_udp_port()
+    recv_addr = free_udp_addr()
+    send_addr = free_udp_addr()
 
-    receiver = RDT20Receiver(("127.0.0.1", recv_port), app_deliver)
-    sender = RDT20Sender(("127.0.0.1", send_port), ("127.0.0.1", recv_port), channel)
+    receiver = RDT20Receiver(recv_addr, app_deliver, channel)
+    sender = RDT20Sender(send_addr, recv_addr, channel)
 
     start_receiver(receiver)
 
+    # Makes a message with a number (ex:msg_1),
+    # then converts it to bytes and puts it an a list.
+    # The list is then sent via the sender
     msgs = [f"msg_{i}".encode() for i in range(10)]
+    
     for m in msgs:
         sender.send(m)
 
-    time.sleep(0.5)
+    time.sleep(1)
 
+    # Asserts that:
+    # 1. Every message was correctly delivered a single time, in the exact order it was sent
     assert delivered == msgs
-    assert len(delivered) == 10
 
 
-# ============================================================================
-# TEST 2 — CORRUPTION ONLY (30% corruption)
-# ============================================================================
+# TEST 2. Introduzir corrupção artificial de bits (inverter bits aleatórios) em 30% dos pacotes
 
-def test_rdt20_corruption_only():
+def test_rdt20_teste_2():
+    
+    # This simulates an upper layer app receiving the data
     delivered = []
 
     def app_deliver(data):
         delivered.append(data)
 
+    # Wrapper made for rdt20.decode_packet to count every time a corrupted packet appears
+    import fase1.rdt20 as rdt20
+    
+    original_decode = rdt20.decode_packet
+    
+    corrupted_count = 0
+    
+    def decode_wrapper(packet):
+        nonlocal corrupted_count
+        info = original_decode(packet)
+        if not info["checksum_ok"]:
+            corrupted_count += 1
+        return info
+
+    rdt20.decode_packet = decode_wrapper 
+
+    # Setup for the channel, receiver(starts in a separate thread) and sender 
     channel = UnreliableChannel(
         loss_rate=0.0,
         corrupt_rate=0.3,
-        delay_range=(0.001, 0.003)
+        delay_range=(0,0)
     )
 
-    recv_port = free_udp_port()
-    send_port = free_udp_port()
+    recv_addr = free_udp_addr()
+    send_addr = free_udp_addr()
 
-    receiver = RDT20Receiver(("127.0.0.1", recv_port), app_deliver)
-    sender = RDT20Sender(("127.0.0.1", send_port), ("127.0.0.1", recv_port), channel)
+    receiver = RDT20Receiver(recv_addr, app_deliver, channel)
+    sender = RDT20Sender(send_addr, recv_addr, channel)
 
     start_receiver(receiver)
 
-    msgs = [f"data_{i}".encode() for i in range(10)]
+    # Makes a message with a number (ex:msg_1),
+    # then converts it to bytes and puts it an a list.
+    # The list is then sent via the sender
+    msgs = [f"data_{i}".encode() for i in range(100)]
     for m in msgs:
         sender.send(m)
 
-    time.sleep(1.0)
+    time.sleep(1)
 
-    assert delivered == msgs
-    assert len(delivered) == 10
+    # Asserts that:
+    # 1. All messages were delivered at least once
+    # 2. There were more messages delivered than sent (Correct because of the duplication in rdt 2.0)
+    # 3. A corruption happened at least once
+    assert contains_all(msgs, delivered)
+    assert len(delivered) >= 100
+    assert corrupted_count > 0
 
 
-# ============================================================================
-# TEST 3 — VERIFY DELIVERY CORRECTNESS
-# ============================================================================
+# TEST 3. Verificar se todas as mensagens chegam corretamente ao destino    
 
-def test_rdt20_delivery_correctness():
+def test_rdt20_teste_3():
+    
+    # This simulates an upper layer app receiving the data
     delivered = []
-
     def app_deliver(data):
         delivered.append(data)
-
-    # Moderate corruption to challenge delivery
-    channel = UnreliableChannel(
-        loss_rate=0.0,
-        corrupt_rate=0.25,
-        delay_range=(0.001, 0.005)
-    )
-
-    recv_port = free_udp_port()
-    send_port = free_udp_port()
-
-    receiver = RDT20Receiver(("127.0.0.1", recv_port), app_deliver)
-    sender = RDT20Sender(("127.0.0.1", send_port), ("127.0.0.1", recv_port), channel)
-
-    start_receiver(receiver)
-
-    msgs = [f"packet_{i}".encode() for i in range(10)]
-
-    for m in msgs:
-        sender.send(m)
-
-    time.sleep(1.2)
-
-    assert delivered == msgs
-    assert len(delivered) == 10
-
-
-# ============================================================================
-# TEST 4 — COUNT RETRANSMISSIONS
-# ============================================================================
-
-def test_rdt20_retransmission_count():
-    delivered = []
-
-    def app_deliver(data):
-        delivered.append(data)
-
-    # High corruption to guarantee retransmissions
+        
+    # Setup for the channel, receiver(starts in a separate thread) and sender 
     channel = UnreliableChannel(
         loss_rate=0.0,
         corrupt_rate=0.3,
-        delay_range=(0.001, 0.008)
+        delay_range=(0,0)
     )
 
-    recv_port = free_udp_port()
-    send_port = free_udp_port()
+    recv_addr = free_udp_addr()
+    send_addr = free_udp_addr()
 
-    receiver = RDT20Receiver(("127.0.0.1", recv_port), app_deliver)
-    sender = RDT20Sender(("127.0.0.1", send_port), ("127.0.0.1", recv_port), channel)
+    receiver = RDT20Receiver(recv_addr, app_deliver, channel)
+    sender = RDT20Sender(send_addr, recv_addr, channel)
+
+    start_receiver(receiver)
+    
+    # Makes a message with a number (ex:msg_1),
+    # then converts it to bytes and puts it an a list.
+    # The list is then sent via the sender
+    msgs = [f"packet_{i}".encode() for i in range(100)]
+
+    for m in msgs:
+        sender.send(m)
+
+    time.sleep(1)
+
+    # Asserts that:
+    # 1. All messages were delivered at least once even with corruption
+    assert contains_all(msgs, delivered)
+
+
+# TEST 4. Registrar quantas retransmissões ocorreram
+
+def test_rdt20_teste_4():
+    
+    # This simulates an upper layer app receiving the data
+    delivered = []
+    def app_deliver(data):
+        delivered.append(data)
+
+    # Setup for the channel, receiver(starts in a separate thread) and sender 
+    channel = UnreliableChannel(
+        loss_rate=0.0,
+        corrupt_rate=0.5,
+        delay_range=(0,0)
+    )
+
+    recv_addr = free_udp_addr()
+    send_addr = free_udp_addr()
+
+    receiver = RDT20Receiver(recv_addr, app_deliver, channel)
+    sender = RDT20Sender(send_addr, recv_addr, channel)
 
     start_receiver(receiver)
 
-    # Count retransmissions by wrapping channel.send
-    retransmissions = 0
+    # Wrapper made for channel.send to count every time a transmission is made
+    transmissions = 0
     original_send = channel.send
 
     def send_wrapper(packet, dest_socket, dest_addr):
-        nonlocal retransmissions
-        # Every time RDT20Sender sends the same data again → retransmission
-        retransmissions += 1
+        nonlocal transmissions
+        transmissions += 1
         return original_send(packet, dest_socket, dest_addr)
 
     channel.send = send_wrapper
-
-    msgs = [f"msg_{i}".encode() for i in range(10)]
+    
+    
+    # Makes a message with a number (ex:msg_1),
+    # then converts it to bytes and puts it an a list.
+    # The list is then sent via the sender
+    
+    msgs = [f"msg_{i}".encode() for i in range(100)]
 
     for m in msgs:
         sender.send(m)
 
     time.sleep(1.0)
+    
+    # Prints the number of retransmissions and then asserts that:
+    # 1. All messages were delivered at least once
+    # 2. There were more messages delivered than sent (Correct because of the duplication in rdt 2.0)
+    # 3. A retransmission happened at least once
+    print("Retransmissions:", transmissions - 100)
 
+    assert contains_all(msgs, delivered)
+    assert len(delivered) >= 100
+    assert transmissions > 100
+    
+    
+    
+######################### RDT 2.1 TESTS #############################
+
+# TEST 1. Corromper 20% dos pacotes DATA
+
+def test_rdt21_test_1():
+    
+    # This simulates an upper layer app receiving the data
+    delivered = []
+    def app_deliver(data):
+        delivered.append(data)
+    
+    # Setup for the channel, receiver(starts in a separate thread) and sender
+    # Wrapper made for UnreliableChannel that distinguishes between packet types
+    channel = DataOnlyCorruptingChannel(
+        UnreliableChannel(loss_rate=0,delay_range=(0,0)),
+        corrupt_rate_for_data=0.2
+        )
+
+    recv_addr = free_udp_addr()
+    send_addr = free_udp_addr()
+
+    receiver = RDT21Receiver(recv_addr, app_deliver, channel)
+    sender = RDT21Sender(send_addr, recv_addr, channel)
+    
+    start_receiver(receiver)
+    
+    # Makes a message with a number (ex:msg_1),
+    # then converts it to bytes and puts it an a list.
+    # The list is then sent via the sender
+    msgs = [f"msg_{i}".encode() for i in range(100)]
+    for m in msgs:
+        sender.send(m)
+
+    time.sleep(1)
+    
+    # Asserts that:
+    # 1. Every message was correctly delivered a single time, in the exact order it was sent
     assert delivered == msgs
-    assert len(delivered) == 10
-    assert retransmissions > 10   # must be > number of original sends
+
+
+# TEST 2. Corromper 20% dos ACKs
+
+def test_rdt21_test_2():
+    
+    # This simulates an upper layer app receiving the data
+    delivered = []
+    def app_deliver(data):
+        delivered.append(data)
+        
+    # Setup for the channel, receiver(starts in a separate thread) and sender
+    # Wrapper made for UnreliableChannel that distinguishes between packet types
+    channel = ACKOnlyCorruptingChannel(
+        UnreliableChannel(loss_rate=0, delay_range=(0,0)),
+        corrupt_rate_for_ack=0.2
+    )
+
+    recv_addr = free_udp_addr()
+    send_addr = free_udp_addr()
+
+    receiver = RDT21Receiver(recv_addr, app_deliver, channel)
+    sender = RDT21Sender(send_addr, recv_addr, channel)
+    
+    start_receiver(receiver)
+    
+    # Makes a message with a number (ex:msg_1),
+    # then converts it to bytes and puts it an a list.
+    # The list is then sent via the sender    
+    msgs = [f"msg_{i}".encode() for i in range(100)]
+    for m in msgs:
+        sender.send(m)
+
+    time.sleep(1)
+    
+    # Asserts that:
+    # 1. Every message was correctly delivered a single time, in the exact order it was sent
+    assert delivered == msgs
