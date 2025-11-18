@@ -4,67 +4,88 @@ from utils.simulator import UnreliableChannel
 
 
 # ============================================================
-# ===================== PACKET FORMAT ========================
+# ===================== PACKET FORMAT =========================
 # ============================================================
 
-_struct_checksum = struct.Struct("!H")
+_struct_header = struct.Struct("!BH")  
+# ! = network byte order
+# B = type (1 byte)
+# H = checksum (2 bytes)
+
+TYPE_DATA = 0
+TYPE_ACK = 1
+TYPE_NAK = 2
 
 
 def compute_checksum(data: bytes) -> int:
-    """16-bit additive checksum (simple RDT-compliant version)."""
     total = 0
     for b in data:
         total = (total + b) & 0xFFFF
     return (~total) & 0xFFFF
 
 
-def make_packet(data: bytes) -> bytes:
-    """Data packet: [2-byte checksum | payload]."""
-    cs = compute_checksum(data)
-    return _struct_checksum.pack(cs) + data
+def make_packet(pkt_type: int, payload: bytes = b"") -> bytes:
+    """
+    Build unified packet: [type | checksum | payload]
+    Checksum computed over: type byte + payload bytes
+    """
+    to_checksum = bytes([pkt_type]) + payload
+    cs = compute_checksum(to_checksum)
+    return _struct_header.pack(pkt_type, cs) + payload
 
 
-def decode_packet(packet: bytes):
-    """Return: { checksum_ok: bool, data: bytes }."""
-    recv_cs, = _struct_checksum.unpack(packet[:2])
-    payload = packet[2:]
-    calc = compute_checksum(payload)
+def decode_packet(raw: bytes):
+    """
+    Decode unified packet.
+    Returns:
+        {
+            "type": TYPE_DATA/TYPE_ACK/TYPE_NAK,
+            "checksum_ok": bool,
+            "payload": bytes
+        }
+    """
+    
+    pkt_type, recv_cs = _struct_header.unpack(raw[:3])
+    payload = raw[3:]
+
+    calc_cs = compute_checksum(bytes([pkt_type]) + payload)
+
     return {
-        "checksum_ok": (recv_cs == calc),
-        "data": payload
+        "type": pkt_type,
+        "checksum_ok": (recv_cs == calc_cs),
+        "payload": payload
     }
 
 
+# ============================================================
+# ===================== HELPERS ==============================
+# ============================================================
+
+def make_data(data: bytes) -> bytes:
+    return make_packet(TYPE_DATA, data)
+
+
 def make_ack() -> bytes:
-    return b"ACK"
+    return make_packet(TYPE_ACK)
 
 
 def make_nak() -> bytes:
-    return b"NAK"
+    return make_packet(TYPE_NAK)
 
 
-def is_ack(msg: bytes) -> bool:
-    return msg == b"ACK"
+def is_ack(pkt: dict) -> bool:
+    return pkt["type"] == TYPE_ACK and pkt["checksum_ok"]
 
 
-def is_nak(msg: bytes) -> bool:
-    return msg == b"NAK"
-
+def is_nak(pkt: dict) -> bool:
+    return pkt["type"] == TYPE_NAK and pkt["checksum_ok"]
 
 # ============================================================
 # ======================= SENDER ==============================
 # ============================================================
 
 class RDT20Sender:
-    """
-    Reliable sender using rdt2.0 protocol.
-    Assumptions:
-      - Data packets may be corrupted/lost (via UnreliableChannel).
-      - ACK/NAK are never corrupted or lost.
-      - No sequence numbers in rdt2.0.
-    """
-
-    def __init__(self, local_addr, remote_addr, channel: UnreliableChannel):
+    def __init__(self, local_addr, remote_addr, channel):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(local_addr)
 
@@ -72,61 +93,45 @@ class RDT20Sender:
         self.channel = channel
 
     def send(self, data: bytes):
-        """
-        Implements:
-            send data
-            wait ACK/NAK
-            if NAK → retransmit
-            if ACK → return
-        """
-        pkt = make_packet(data)
+        pkt = make_packet(TYPE_DATA, data)
 
         while True:
-            # send unreliable DATA packet
             self.channel.send(pkt, self.sock, self.remote_addr)
 
-            # wait for ACK or NAK (reliable)
             msg, _ = self.sock.recvfrom(2048)
-
-            if is_ack(msg):
+            info = decode_packet(msg)
+            
+            if not info["checksum_ok"]:
+                continue
+            
+            if is_nak(info):
+                continue
+            
+            if is_ack(info):
                 return
-            if is_nak(msg):
-                continue  # retransmit
-
-
+                   
 # ============================================================
 # ======================= RECEIVER ============================
 # ============================================================
 
 class RDT20Receiver:
-    """
-    Reliable receiver using rdt2.0 protocol.
-    Assumptions:
-      - Incoming data packets may be corrupted.
-      - ACK and NAK sent reliably over UDP.
-      - No sequence numbers.
-    """
-
-    def __init__(self, local_addr, app_deliver_callback):
+    def __init__(self, local_addr, app_deliver_callback, channel):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(local_addr)
         self.app_deliver = app_deliver_callback
+        self.channel = channel
 
     def loop(self):
-        """
-        Blocking receive loop.
-        Your test file should run this on a separate thread.
-        """
         while True:
             pkt, sender_addr = self.sock.recvfrom(4096)
-
             info = decode_packet(pkt)
 
             if not info["checksum_ok"]:
-                # corrupted → send NAK
-                self.sock.sendto(make_nak(), sender_addr)
+                self.channel.send(make_nak(), self.sock, sender_addr)
                 continue
 
-            # correct → deliver + send ACK
-            self.app_deliver(info["data"])
-            self.sock.sendto(make_ack(), sender_addr)
+            if info["type"] != TYPE_DATA:
+                continue
+
+            self.app_deliver(info["payload"])
+            self.channel.send(make_ack(), self.sock, sender_addr)
