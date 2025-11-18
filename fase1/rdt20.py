@@ -18,6 +18,18 @@ TYPE_NAK = 2
 
 
 def compute_checksum(data: bytes) -> int:
+    """Compute a 16-bit one's-complement checksum for `data`.
+
+    The checksum is computed as the one's-complement of the
+    sum of all bytes truncated to 16 bits.
+
+    Args:
+        data: Bytes over which to compute the checksum.
+
+    Returns:
+        The 16-bit checksum as an integer.
+    """
+
     total = 0
     for b in data:
         total = (total + b) & 0xFFFF
@@ -62,27 +74,68 @@ def decode_packet(raw: bytes):
 # ============================================================
 
 def make_data(data: bytes) -> bytes:
+    """Build a DATA packet containing `data` as payload.
+
+    Args:
+        data: Payload bytes to include in the DATA packet.
+
+    Returns:
+        The serialized packet bytes.
+    """
+
     return make_packet(TYPE_DATA, data)
 
 
 def make_ack() -> bytes:
+    """Build an ACK packet with no payload.
+
+    Returns:
+        The serialized ACK packet bytes.
+    """
+
     return make_packet(TYPE_ACK)
 
 
 def make_nak() -> bytes:
+    """Build a NAK packet with no payload.
+
+    Returns:
+        The serialized NAK packet bytes.
+    """
+
     return make_packet(TYPE_NAK)
 
 
 def is_ack(pkt: dict) -> bool:
+    """Return True if `pkt` is a valid ACK packet.
+
+    Args:
+        pkt: Decoded-packet dictionary returned by `decode_packet`.
+
+    Returns:
+        True when `pkt` is an ACK and the checksum is valid.
+    """
+
     return pkt["type"] == TYPE_ACK and pkt["checksum_ok"]
 
 
 def is_nak(pkt: dict) -> bool:
+    """Return True if `pkt` is a valid NAK packet.
+
+    Args:
+        pkt: Decoded-packet dictionary returned by `decode_packet`.
+
+    Returns:
+        True when `pkt` is a NAK and the checksum is valid.
+    """
+
     return pkt["type"] == TYPE_NAK and pkt["checksum_ok"]
+
 
 # ============================================================
 # ======================= SENDER ==============================
 # ============================================================
+
 
 class RDT20Sender:
     def __init__(self, local_addr, remote_addr, channel):
@@ -91,8 +144,24 @@ class RDT20Sender:
 
         self.remote_addr = remote_addr
         self.channel = channel
+        """Initialize an RDT 2.0 sender.
+
+        Args:
+            local_addr: Local UDP address tuple to bind to (host, port).
+            remote_addr: Remote UDP address tuple to send packets to.
+            channel: Channel-like object exposing `send(packet, sock, addr)`.
+        """
 
     def send(self, data: bytes):
+        """Send `data` reliably using the RDT 2.0 sender protocol.
+
+        This will repeatedly transmit the DATA packet until a valid ACK
+        (with correct checksum) is received from the receiver.
+
+        Args:
+            data: Payload bytes to send.
+        """
+
         pkt = make_packet(TYPE_DATA, data)
 
         while True:
@@ -120,8 +189,23 @@ class RDT20Receiver:
         self.sock.bind(local_addr)
         self.app_deliver = app_deliver_callback
         self.channel = channel
+        """Initialize an RDT 2.0 receiver.
+
+        Args:
+            local_addr: Local UDP address tuple to bind to (host, port).
+            app_deliver_callback: Callable invoked with payload bytes when a
+                valid DATA packet is received.
+            channel: Channel-like object exposing `send(packet, sock, addr)`.
+        """
 
     def loop(self):
+        """Run the receiver loop forever.
+
+        The loop receives incoming UDP packets, checks the checksum and
+        packet type, and either delivers the payload to the application
+        or sends a NAK/ACK back to the sender as appropriate.
+        """
+
         while True:
             pkt, sender_addr = self.sock.recvfrom(4096)
             info = decode_packet(pkt)

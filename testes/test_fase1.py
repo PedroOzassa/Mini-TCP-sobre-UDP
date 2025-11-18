@@ -16,11 +16,13 @@ def free_udp_addr():
     s.close()
     return addr
 
+
 # Starts the reciever in a new thread
 def start_receiver(receiver):
     t = threading.Thread(target=receiver.loop, daemon=True)
     t.start()
     return t
+
 
 # Checks if every element in the list of sent messages is on the delivered list
 def contains_all(sent, delivered):
@@ -33,6 +35,8 @@ def contains_all(sent, delivered):
 # Wraps an UnreliableChannel and ensures that ONLY DATA packets are corrupted
 # This wrapper was necessary because UnreliableChannel does not have the ability
 # to distinguish between DATA, ACK, NAK or any type of packet 
+
+
 class DataOnlyCorruptingChannel:
     def __init__(self, channel, corrupt_rate_for_data):
         self.base_channel = channel
@@ -52,9 +56,11 @@ class DataOnlyCorruptingChannel:
             self.base_channel.send(packet, dest_socket, dest_addr)
             self.base_channel.corrupt_rate = old_corrupt_rate
             
+
+
 # Wraps an UnreliableChannel and ensures that ONLY ACK packets are corrupted
 # This wrapper was necessary because UnreliableChannel does not have the ability
-# to distinguish between DATA, ACK, NAK or any type of packet 
+# to distinguish between DATA, ACK, NAK or any type of packet
 class ACKOnlyCorruptingChannel:
     def __init__(self, channel, corrupt_rate_for_ack):
         self.base_channel = channel
@@ -75,6 +81,8 @@ class ACKOnlyCorruptingChannel:
 
 
 ######################### RDT 2.0 TESTS #############################
+
+
 
 # TEST 1. Transmitir uma sequência de 10 mensagens com canal perfeito
 
@@ -113,6 +121,8 @@ def test_rdt20_teste_1():
     # Asserts that:
     # 1. Every message was correctly delivered a single time, in the exact order it was sent
     assert delivered == msgs
+
+
 
 
 # TEST 2. Introduzir corrupção artificial de bits (inverter bits aleatórios) em 30% dos pacotes
@@ -174,7 +184,9 @@ def test_rdt20_teste_2():
     assert corrupted_count > 0
 
 
-# TEST 3. Verificar se todas as mensagens chegam corretamente ao destino    
+
+
+# TEST 3. Verificar se todas as mensagens chegam corretamente ao destino
 
 def test_rdt20_teste_3():
     
@@ -211,6 +223,8 @@ def test_rdt20_teste_3():
     # Asserts that:
     # 1. All messages were delivered at least once even with corruption
     assert contains_all(msgs, delivered)
+
+
 
 
 # TEST 4. Registrar quantas retransmissões ocorreram
@@ -272,7 +286,10 @@ def test_rdt20_teste_4():
     
     
     
+
+
 ######################### RDT 2.1 TESTS #############################
+
 
 # TEST 1. Corromper 20% dos pacotes DATA
 
@@ -310,6 +327,8 @@ def test_rdt21_test_1():
     # Asserts that:
     # 1. Every message was correctly delivered a single time, in the exact order it was sent
     assert delivered == msgs
+
+
 
 
 # TEST 2. Corromper 20% dos ACKs
