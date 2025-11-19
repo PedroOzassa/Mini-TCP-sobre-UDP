@@ -31,49 +31,51 @@ def contains_all(sent, delivered):
             return False
     return True
 
-# Wraps an UnreliableChannel and ensures that ONLY DATA packets are corrupted
-# This wrapper was necessary because UnreliableChannel does not have the ability
-# to distinguish between DATA, ACK, NAK or any type of packet 
-class DataOnlyCorruptingChannel:
-    def __init__(self, channel, corrupt_rate_for_data):
+# Wraps an UnreliableChannel and ensures that ONLY SPECIFIC 
+# packets are corrupted. This wrapper was necessary because
+# UnreliableChannel does not  have the ability to distinguish
+# between DATA, ACK, NAK or any type of packet 
+class SpecificCorruptingChannel:
+    def __init__(self, data_type,  channel: UnreliableChannel,
+                 specific_corrupt = 0.0, specific_loss = 0.0, specific_delay = (0,0)):
         self.base_channel = channel
-        self.corrupt_rate_for_data = corrupt_rate_for_data
+        self.specific_corrupt = specific_corrupt
+        self.specific_loss = specific_loss
+        self.specific_delay = specific_delay
+        self.data_type = data_type
 
     def send(self, packet, dest_socket, dest_addr):
         info = decode_packet(packet)
 
-        if info["type"] == TYPE_DATA:
+        if info["type"] == self.data_type:
             old_corrupt_rate = self.base_channel.corrupt_rate
-            self.base_channel.corrupt_rate = self.corrupt_rate_for_data
-            self.base_channel.send(packet, dest_socket, dest_addr)
-            self.base_channel.corrupt_rate = old_corrupt_rate
-        else:
-            old_corrupt_rate = self.base_channel.corrupt_rate
-            self.base_channel.corrupt_rate = 0.0
-            self.base_channel.send(packet, dest_socket, dest_addr)
-            self.base_channel.corrupt_rate = old_corrupt_rate
+            old_loss_rate = self.base_channel.loss_rate
+            old_delay = self.base_channel.delay_range
             
-# Wraps an UnreliableChannel and ensures that ONLY ACK packets are corrupted
-# This wrapper was necessary because UnreliableChannel does not have the ability
-# to distinguish between DATA, ACK, NAK or any type of packet 
-class ACKOnlyCorruptingChannel:
-    def __init__(self, channel, corrupt_rate_for_ack):
-        self.base_channel = channel
-        self.corrupt_rate_for_ack = corrupt_rate_for_ack
-
-    def send(self, packet, dest_socket, dest_addr):
-        info = decode_packet(packet)
-        if info["type"] == TYPE_ACK:
-            old_corrupt_rate = self.base_channel.corrupt_rate
-            self.base_channel.corrupt_rate = self.corrupt_rate_for_ack
+            self.base_channel.corrupt_rate = self.specific_corrupt
+            self.base_channel.loss_rate = self.specific_loss
+            self.base_channel.delay_range = self.specific_delay
+            
             self.base_channel.send(packet, dest_socket, dest_addr)
+            
             self.base_channel.corrupt_rate = old_corrupt_rate
+            self.base_channel.loss_rate = old_loss_rate
+            self.base_channel.delay_range = old_delay
         else:
             old_corrupt_rate = self.base_channel.corrupt_rate
+            old_loss_rate = self.base_channel.loss_rate
+            old_delay = self.base_channel.delay_range
+            
             self.base_channel.corrupt_rate = 0.0
+            self.base_channel.loss_rate = 0.0
+            self.base_channel.delay_range = (0,0)
+            
             self.base_channel.send(packet, dest_socket, dest_addr)
+            
             self.base_channel.corrupt_rate = old_corrupt_rate
-
+            self.base_channel.loss_rate = old_loss_rate
+            self.base_channel.delay_range = old_delay
+            
 
 ######################### RDT 2.0 TESTS #############################
 
@@ -104,7 +106,8 @@ def test_rdt20_teste_1():
     # Makes a message with a number (ex:msg_1),
     # then converts it to bytes and puts it an a list.
     # The list is then sent via the sender
-    msgs = [f"msg_{i}".encode() for i in range(10)]
+    qtt = 10
+    msgs = [f"msg_{i}".encode() for i in range(qtt)]
     
     for m in msgs:
         sender.send(m)
@@ -160,7 +163,8 @@ def test_rdt20_teste_2():
     # Makes a message with a number (ex:msg_1),
     # then converts it to bytes and puts it an a list.
     # The list is then sent via the sender
-    msgs = [f"data_{i}".encode() for i in range(100)]
+    qtt = 100
+    msgs = [f"data_{i}".encode() for i in range(qtt)]
     for m in msgs:
         sender.send(m)
 
@@ -171,7 +175,7 @@ def test_rdt20_teste_2():
     # 2. There were more messages delivered than sent (Correct because of the duplication in rdt 2.0)
     # 3. A corruption happened at least once
     assert contains_all(msgs, delivered)
-    assert len(delivered) >= 100
+    assert len(delivered) >= qtt
     assert corrupted_count > 0
 
 
@@ -202,7 +206,8 @@ def test_rdt20_teste_3():
     # Makes a message with a number (ex:msg_1),
     # then converts it to bytes and puts it an a list.
     # The list is then sent via the sender
-    msgs = [f"packet_{i}".encode() for i in range(100)]
+    qtt = 100
+    msgs = [f"packet_{i}".encode() for i in range(qtt)]
 
     for m in msgs:
         sender.send(m)
@@ -253,8 +258,8 @@ def test_rdt20_teste_4():
     # Makes a message with a number (ex:msg_1),
     # then converts it to bytes and puts it an a list.
     # The list is then sent via the sender
-    
-    msgs = [f"msg_{i}".encode() for i in range(100)]
+    qtt = 100
+    msgs = [f"msg_{i}".encode() for i in range(qtt)]
 
     for m in msgs:
         sender.send(m)
@@ -265,11 +270,11 @@ def test_rdt20_teste_4():
     # 1. All messages were delivered at least once
     # 2. There were more messages delivered than sent (Correct because of the duplication in rdt 2.0)
     # 3. A retransmission happened at least once
-    print("Retransmissions:", transmissions - 100)
+    print("Retransmissions:", transmissions - qtt)
 
     assert contains_all(msgs, delivered)
-    assert len(delivered) >= 100
-    assert transmissions > 100
+    assert len(delivered) >= qtt
+    assert transmissions > qtt
     
     
     
@@ -286,10 +291,7 @@ def test_rdt21_test_1():
     
     # Setup for the channel, receiver(starts in a separate thread) and sender
     # Wrapper made for UnreliableChannel that distinguishes between packet types
-    channel = DataOnlyCorruptingChannel(
-        UnreliableChannel(loss_rate=0,delay_range=(0,0)),
-        corrupt_rate_for_data=0.2
-        )
+    channel = SpecificCorruptingChannel(data_type=TYPE_DATA, channel=UnreliableChannel(), specific_corrupt=0.2)
 
     recv_addr = free_udp_addr()
     send_addr = free_udp_addr()
@@ -302,7 +304,8 @@ def test_rdt21_test_1():
     # Makes a message with a number (ex:msg_1),
     # then converts it to bytes and puts it an a list.
     # The list is then sent via the sender
-    msgs = [f"msg_{i}".encode() for i in range(100)]
+    qtt = 100
+    msgs = [f"msg_{i}".encode() for i in range(qtt)]
     for m in msgs:
         sender.send(m)
 
@@ -324,10 +327,7 @@ def test_rdt21_test_2():
         
     # Setup for the channel, receiver(starts in a separate thread) and sender
     # Wrapper made for UnreliableChannel that distinguishes between packet types
-    channel = ACKOnlyCorruptingChannel(
-        UnreliableChannel(loss_rate=0, delay_range=(0,0)),
-        corrupt_rate_for_ack=0.2
-    )
+    channel = SpecificCorruptingChannel(data_type=TYPE_ACK, channel=UnreliableChannel(), specific_corrupt=0.2)
 
     recv_addr = free_udp_addr()
     send_addr = free_udp_addr()
@@ -339,8 +339,9 @@ def test_rdt21_test_2():
     
     # Makes a message with a number (ex:msg_1),
     # then converts it to bytes and puts it an a list.
-    # The list is then sent via the sender    
-    msgs = [f"msg_{i}".encode() for i in range(100)]
+    # The list is then sent via the sender
+    qtt = 100
+    msgs = [f"msg_{i}".encode() for i in range(qtt)]
     for m in msgs:
         sender.send(m)
 
@@ -378,7 +379,8 @@ def test_rdt21_test_3():
     # Makes a message with a number (ex:msg_1),
     # then converts it to bytes and puts it an a list.
     # The list is then sent via the sender
-    msgs = [f"msg_{i}".encode() for i in range(100)]
+    qtt = 100
+    msgs = [f"msg_{i}".encode() for i in range(qtt)]
     for m in msgs:
         sender.send(m)
 
@@ -440,7 +442,8 @@ def test_rdt21_test_4():
     # Makes a message with a number (ex:msg_1),
     # then converts it to bytes and puts it an a list.
     # The list is then sent via the sender
-    msgs = [f"msg_{i}".encode() for i in range(100)]
+    qtt = 100
+    msgs = [f"msg_{i}".encode() for i in range(qtt)]
     for m in msgs:
         sender.send(m)
         
@@ -457,14 +460,14 @@ def test_rdt21_test_4():
     print(f"Total useful payload bytes: {useful_bytes}")
     print(f"Total transmitted bytes: {total_sent_bytes}")
     print(f"Overhead bytes: {overhead_bytes}")
-    print(f"Overhead(extra bytes per data message): {overhead_bytes/100}")
+    print(f"Overhead(extra bytes per data message): {overhead_bytes/qtt}")
     print(f"Header bytes alone: {total_header_bytes}")
     print(f"Payload bytes (incl. retransmissions): {total_payload_bytes}")
     print("================================\n")
     
 ######################### RDT 3.0 TESTS #############################
     
-# 1. Simular perda de 15% dos pacotes DATA (descartar aleatoriamente antes de enviar)
+# TEST 1. Simular perda de 15% dos pacotes DATA (descartar aleatoriamente antes de enviar)
 
 def test_rdt30_test_1():
     
@@ -474,35 +477,233 @@ def test_rdt30_test_1():
         delivered.append(data)
     
     # Setup for the channel, receiver(starts in a separate thread) and sender
-    channel = UnreliableChannel(
-        loss_rate=0.3,
-        corrupt_rate=0.0,
-        delay_range=(0.1,0.5)
+    # Wrapper made for UnreliableChannel that distinguishes between packet types
+    channel = SpecificCorruptingChannel(
+        data_type=TYPE_ACK,
+        channel=UnreliableChannel(),
+        
+        specific_loss=0.15,
+        specific_corrupt=0.0,
+        specific_delay=(0.1,0.3)
     )
 
     recv_addr = free_udp_addr()
     send_addr = free_udp_addr()
 
     receiver = RDT30Receiver(recv_addr, app_deliver, channel)
-    sender = RDT30Sender(send_addr, recv_addr, channel, timeout=0.3)
+    # Timeout is sometimes smaller than delay to simulate worst-case scenario
+    sender = RDT30Sender(send_addr, recv_addr, channel, timeout=0.2)
     
     start_receiver(receiver)
     
     # Makes a message with a number (ex:msg_1),
     # then converts it to bytes and puts it an a list.
     # The list is then sent via the sender
-    msgs = [f"msg_{i}".encode() for i in range(100)]
+    qtt = 25
+    msgs = [f"msg_{i}".encode() for i in range(qtt)]
     for m in msgs:
         sender.send(m)
 
     time.sleep(1)
-    
-    print("")
-    print(msgs)
-    print(delivered)
     
     # Asserts that:
     # 1. Every message was correctly delivered a single time, in the exact order it was sent
     assert delivered == msgs
     
     
+    
+# TEST 2. Simular perda de 15% dos ACKs
+
+def test_rdt30_test_2():
+    
+    # This simulates an upper layer app receiving the data
+    delivered = []
+    def app_deliver(data):
+        delivered.append(data)
+    
+    # Setup for the channel, receiver(starts in a separate thread) and sender
+    # Wrapper made for UnreliableChannel that distinguishes between packet types
+    channel = SpecificCorruptingChannel(
+        data_type=TYPE_ACK,
+        channel=UnreliableChannel(),
+        
+        specific_loss=0.15,
+        specific_corrupt=0.0,
+        specific_delay=(0.1,0.3)
+    )
+
+    recv_addr = free_udp_addr()
+    send_addr = free_udp_addr()
+
+    receiver = RDT30Receiver(recv_addr, app_deliver, channel)
+    # Timeout is sometimes smaller than delay to simulate worst-case scenario
+    sender = RDT30Sender(send_addr, recv_addr, channel, timeout=0.2)
+    
+    start_receiver(receiver)
+    
+    # Makes a message with a number (ex:msg_1),
+    # then converts it to bytes and puts it an a list.
+    # The list is then sent via the sender
+    qtt = 10
+    msgs = [f"msg_{i}".encode() for i in range(qtt)]
+    for m in msgs:
+        sender.send(m)
+
+    time.sleep(1)
+    
+    # Asserts that:
+    # 1. Every message was correctly delivered a single time, in the exact order it was sent
+    assert delivered == msgs
+    
+    
+# TEST 3. Simular atraso variável (50-500ms) na rede
+
+def test_rdt30_test_3():
+    
+    # This simulates an upper layer app receiving the data
+    delivered = []
+    def app_deliver(data):
+        delivered.append(data)
+    
+    # Setup for the channel, receiver(starts in a separate thread) and sender
+    # Wrapper made for UnreliableChannel that distinguishes between packet types
+    channel = SpecificCorruptingChannel(
+        data_type=TYPE_ACK,
+        channel=UnreliableChannel(),
+        
+        specific_loss=0.15,
+        specific_corrupt=0.0,
+        specific_delay=(0.05,0.5)
+    )
+
+    recv_addr = free_udp_addr()
+    send_addr = free_udp_addr()
+
+    receiver = RDT30Receiver(recv_addr, app_deliver, channel)
+    # Timeout is sometimes smaller than delay to simulate worst-case scenario
+    sender = RDT30Sender(send_addr, recv_addr, channel, timeout=0.2)
+    
+    start_receiver(receiver)
+    
+    # Makes a message with a number (ex:msg_1),
+    # then converts it to bytes and puts it an a list.
+    # The list is then sent via the sender
+    qtt = 10
+    msgs = [f"msg_{i}".encode() for i in range(qtt)]
+    for m in msgs:
+        sender.send(m)
+
+    time.sleep(1)
+    
+    # Asserts that:
+    # 1. Every message was correctly delivered a single time, in the exact order it was sent
+    assert delivered == msgs
+    
+    
+# TEST 4. Verificar se todas as mensagens são entregues corretamente
+
+def test_rdt30_test_4():
+    
+    # This simulates an upper layer app receiving the data
+    delivered = []
+    def app_deliver(data):
+        delivered.append(data)
+    
+    # Setup for the channel, receiver(starts in a separate thread) and sender
+    # In this test, simulates very bad conditions for transfer
+    channel = UnreliableChannel(
+        loss_rate=0.3,
+        corrupt_rate=0.3,
+        delay_range=(0.1,0.3)
+    )
+
+    recv_addr = free_udp_addr()
+    send_addr = free_udp_addr()
+
+    receiver = RDT30Receiver(recv_addr, app_deliver, channel)
+    # Timeout is sometimes smaller than delay to simulate worst-case scenario
+    sender = RDT30Sender(send_addr, recv_addr, channel, timeout=0.2)
+    
+    start_receiver(receiver)
+    
+    # Makes a message with a number (ex:msg_1),
+    # then converts it to bytes and puts it an a list.
+    # The list is then sent via the sender
+    qtt = 10
+    msgs = [f"msg_{i}".encode() for i in range(qtt)]
+    for m in msgs:
+        sender.send(m)
+
+    time.sleep(1)
+    
+    # Asserts that:
+    # 1. Every message was correctly delivered a single time, in the exact order it was sent
+    assert delivered == msgs
+
+
+# TEST 5. Medir:
+# Taxa de retransmissão
+# Throughput efetivo (bytes úteis / tempo total)
+
+def test_rdt30_test_5():
+    
+    # This simulates an upper layer app receiving the data
+    delivered = []
+    def app_deliver(data):
+        delivered.append(data)
+    
+    # Setup for the channel, receiver(starts in a separate thread) and sender
+    # In this test, simulates very bad conditions for transfer
+    channel = UnreliableChannel(
+        loss_rate=0.3,
+        corrupt_rate=0.3,
+        delay_range=(0.1,0.3)
+    )
+
+    recv_addr = free_udp_addr()
+    send_addr = free_udp_addr()
+
+    receiver = RDT30Receiver(recv_addr, app_deliver, channel)
+    # Timeout is sometimes smaller than delay to simulate worst-case scenario
+    sender = RDT30Sender(send_addr, recv_addr, channel, timeout=0.2)
+    
+    start_receiver(receiver)
+    
+    # Wrapper made for channel.send to count every time a transmission is made
+    transmissions = 0
+    original_send = channel.send
+
+    def send_wrapper(packet, dest_socket, dest_addr):
+        nonlocal transmissions
+        transmissions += 1
+        return original_send(packet, dest_socket, dest_addr)
+
+    channel.send = send_wrapper
+    
+    # Makes a message with a number (ex:msg_1),
+    # then converts it to bytes and puts it an a list.
+    # The list is then sent via the sender
+    qtt = 10
+    msgs = [f"msg_{i}".encode() for i in range(qtt)]
+    
+    start_t = time.time()
+    
+    for m in msgs:
+        sender.send(m)
+        
+    end_t = time.time()
+    
+    time.sleep(1)
+
+    total_time = end_t - start_t
+    useful_bytes = sum(len(m) for m in msgs)
+    
+    # Prints the number of retransmissions and then asserts that:
+    # 1. All messages were delivered at least once
+    # 2. A retransmission happened at least once
+    print("Retransmissions:", transmissions - qtt)
+    print(f"Retransmission Rate: {transmissions/qtt:.3g} retransmissions per transmission")
+    print(f"Throughput(useful bytes/total time): {useful_bytes/total_time:.3g} B/s")
+
+    assert delivered == msgs
+    assert transmissions > qtt
