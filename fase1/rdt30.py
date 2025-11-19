@@ -1,7 +1,6 @@
 import socket
 import struct
 import threading
-from utils.simulator import UnreliableChannel
 
 
 # ============================================================
