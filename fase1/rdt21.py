@@ -169,7 +169,7 @@ class RDT21Sender:
         self.remote_addr = remote_addr
         self.channel = channel
 
-        self.seq = 0  # alternating bit protocol (0 → 1 → 0 → 1 ...)
+        self.seq = 0
         """Initialize an RDT 2.1 sender.
 
         Args:
@@ -257,9 +257,6 @@ class RDT21Receiver:
                 self.channel.send(make_ack(self.expected_seq), self.sock, sender_addr)
                 self.expected_seq = 1 - self.expected_seq
                 continue
-
-            # If DATA has wrong seq (duplicate)
-            # → do NOT deliver, but ACK the last correctly received seq
-            # i.e., ACK the opposite of expected_seq
-            last_seq = 1 - self.expected_seq
-            self.channel.send(make_ack(last_seq), self.sock, sender_addr)
+            else:
+                last_seq = 1 - self.expected_seq
+                self.channel.send(make_ack(last_seq), self.sock, sender_addr)

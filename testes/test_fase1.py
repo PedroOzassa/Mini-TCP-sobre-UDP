@@ -5,6 +5,7 @@ import socket
 from utils.simulator import UnreliableChannel
 from fase1.rdt20 import RDT20Sender, RDT20Receiver
 from fase1.rdt21 import RDT21Sender, RDT21Receiver, decode_packet, TYPE_DATA, TYPE_ACK, TYPE_NAK
+from fase1.rdt30 import RDT30Sender, RDT30Receiver
 
 # Utilities
 
@@ -460,3 +461,48 @@ def test_rdt21_test_4():
     print(f"Header bytes alone: {total_header_bytes}")
     print(f"Payload bytes (incl. retransmissions): {total_payload_bytes}")
     print("================================\n")
+    
+######################### RDT 3.0 TESTS #############################
+    
+# 1. Simular perda de 15% dos pacotes DATA (descartar aleatoriamente antes de enviar)
+
+def test_rdt30_test_1():
+    
+    # This simulates an upper layer app receiving the data
+    delivered = []
+    def app_deliver(data):
+        delivered.append(data)
+    
+    # Setup for the channel, receiver(starts in a separate thread) and sender
+    channel = UnreliableChannel(
+        loss_rate=0.3,
+        corrupt_rate=0.0,
+        delay_range=(0.1,0.5)
+    )
+
+    recv_addr = free_udp_addr()
+    send_addr = free_udp_addr()
+
+    receiver = RDT30Receiver(recv_addr, app_deliver, channel)
+    sender = RDT30Sender(send_addr, recv_addr, channel, timeout=0.3)
+    
+    start_receiver(receiver)
+    
+    # Makes a message with a number (ex:msg_1),
+    # then converts it to bytes and puts it an a list.
+    # The list is then sent via the sender
+    msgs = [f"msg_{i}".encode() for i in range(100)]
+    for m in msgs:
+        sender.send(m)
+
+    time.sleep(1)
+    
+    print("")
+    print(msgs)
+    print(delivered)
+    
+    # Asserts that:
+    # 1. Every message was correctly delivered a single time, in the exact order it was sent
+    assert delivered == msgs
+    
+    

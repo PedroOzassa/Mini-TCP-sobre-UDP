@@ -28,7 +28,7 @@ def compute_checksum(data: bytes) -> int:
 
 def make_packet(pkt_type: int, seq: int, payload: bytes = b"") -> bytes:
     """
-    Build unified rdt2.1 packet:
+    Build unified rdt3.0 packet:
         type (1B)
         seqnum (1B)
         checksum (2B)
@@ -43,11 +43,11 @@ def make_packet(pkt_type: int, seq: int, payload: bytes = b"") -> bytes:
 
 def decode_packet(raw: bytes):
     """
-    Decode unified rdt2.1 packet.
+    Decode unified rdt3.0 packet.
     Returns:
         {
             "type": ...,
-            "seq": 0/1,
+            "seq": int, # Incrementing sequence
             "checksum_ok": bool,
             "payload": bytes
         }
@@ -158,7 +158,14 @@ class RDT30Sender:
 
                 if is_ack(info, self.seq):
                     self._stop_timer()
-                    self.seq = 1 - self.seq
+                    
+                    # Seqnum needed to be changed to account for the possibility
+                    # of extreme delay, much more than the timeout window in the
+                    # Sender. The old 0/1 alternating bit could cause problems
+                    # if there was enough time for two complete packages to pass
+                    # through the channel, leaving a stale ACK with a "correct" 
+                    # seqnum still in travel, causing a possible packet loss.
+                    self.seq = (self.seq + 1) & 0xFF
                     return
 
 # ============================================================
@@ -188,8 +195,15 @@ class RDT30Receiver:
             if info["seq"] == self.expected_seq:
                 self.app_deliver(info["payload"])
                 self.channel.send(make_ack(self.expected_seq), self.sock, sender_addr)
-                self.expected_seq = 1 - self.expected_seq
-                continue
+                
+                # Seqnum needed to be changed to account for the possibility
+                # of extreme delay, much more than the timeout window in the
+                # Sender. The old 0/1 alternating bit could cause problems
+                # if there was enough time for two complete packages to pass
+                # through the channel, leaving a stale ACK with a "correct" 
+                # seqnum still in travel, causing a possible packet loss.
+                self.expected_seq = (self.expected_seq + 1) & 0xFF
+            else:
+                last_seq = (self.expected_seq - 1) & 0xFF
+                self.channel.send(make_ack(last_seq), self.sock, sender_addr)
 
-            last_seq = 1 - self.expected_seq
-            self.channel.send(make_ack(last_seq), self.sock, sender_addr)
