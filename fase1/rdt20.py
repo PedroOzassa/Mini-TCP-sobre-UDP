@@ -57,8 +57,8 @@ def decode_packet(raw: bytes):
         }
     """
     
-    pkt_type, recv_cs = _struct_header.unpack(raw[:3])
-    payload = raw[3:]
+    pkt_type, recv_cs = _struct_header.unpack(raw[:_struct_header.size])
+    payload = raw[_struct_header.size:]
 
     calc_cs = compute_checksum(bytes([pkt_type]) + payload)
 
