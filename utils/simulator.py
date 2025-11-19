@@ -18,13 +18,13 @@ class UnreliableChannel:
 
         # Simular perda
         if random.random() < self.loss_rate:
-            print("[SIMULADOR] Pacote perdido")
+            #print("[SIMULADOR] Pacote perdido")
             return
 
         # Simular corrupção
         if random.random() < self.corrupt_rate:
             packet = self._corrupt_packet(packet)
-            print("[SIMULADOR] Pacote corrompido")
+            #print("[SIMULADOR] Pacote corrompido")
 
         # Simular atraso e enviar
         delay = random.uniform(*self.delay_range)

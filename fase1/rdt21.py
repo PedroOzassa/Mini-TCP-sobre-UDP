@@ -1,159 +1,22 @@
 import socket
-import struct
-from utils.simulator import UnreliableChannel
+
+from utils.packet import (
+    TYPE_DATA,
+    TYPE_ACK,
+    TYPE_NAK,
+    make_data_21 as make_data,
+    make_ack_21 as make_ack,
+    make_nak_21 as make_nak,
+    decode_packet_21 as decode_packet,
+    is_ack_21 as is_ack,
+    is_nak_21 as is_nak,
+)
 
 
-# ============================================================
-# ===================== PACKET FORMAT =========================
-# ============================================================
-
-_struct_header = struct.Struct("!B B H")
-# ! = network byte order
-# B = type (1 byte)
-# B = seqnum (1 byte)
-# H = checksum (2 bytes)
-
-TYPE_DATA = 0
-TYPE_ACK  = 1
-TYPE_NAK  = 2
+# packet helpers are provided by `utils.packet` (rdt2.1/3.0 variants)
 
 
-def compute_checksum(data: bytes) -> int:
-    """Compute a 16-bit one's-complement checksum for `data`.
-
-    The checksum is the one's-complement of the sum of all bytes
-    truncated to 16 bits.
-
-    Args:
-        data: Bytes over which to compute the checksum.
-
-    Returns:
-        The 16-bit checksum as an integer.
-    """
-
-    total = 0
-    for b in data:
-        total = (total + b) & 0xFFFF
-    return (~total) & 0xFFFF
-
-
-def make_packet(pkt_type: int, seq: int, payload: bytes = b"") -> bytes:
-    """
-    Build unified rdt2.1 packet:
-        type (1B)
-        seqnum (1B)
-        checksum (2B)
-        payload (...)
-    Checksum is computed over: type + seq + payload
-    """
-    to_checksum = bytes([pkt_type, seq]) + payload
-    cs = compute_checksum(to_checksum)
-
-    return _struct_header.pack(pkt_type, seq, cs) + payload
-
-
-def decode_packet(raw: bytes):
-    """
-    Decode unified rdt2.1 packet.
-    Returns:
-        {
-            "type": ...,
-            "seq": 0/1,
-            "checksum_ok": bool,
-            "payload": bytes
-        }
-    """
-    pkt_type, seq, recv_cs = _struct_header.unpack(raw[:_struct_header.size])
-    payload = raw[_struct_header.size:]
-
-    calc_cs = compute_checksum(bytes([pkt_type, seq]) + payload)
-
-    return {
-        "type": pkt_type,
-        "seq": seq,
-        "checksum_ok": (recv_cs == calc_cs),
-        "payload": payload
-    }
-
-
-# ============================================================
-# ===================== HELPERS ==============================
-# ============================================================
-
-def make_data(seq: int, data: bytes) -> bytes:
-    """Build a DATA packet for sequence number `seq` containing `data`.
-
-    Args:
-        seq: Sequence number (0 or 1) for the alternating-bit protocol.
-        data: Payload bytes.
-
-    Returns:
-        The serialized DATA packet bytes.
-    """
-
-    return make_packet(TYPE_DATA, seq, data)
-
-
-def make_ack(seq: int) -> bytes:
-    """Build an ACK packet for sequence number `seq`.
-
-    Args:
-        seq: Sequence number being acknowledged.
-
-    Returns:
-        The serialized ACK packet bytes.
-    """
-
-    return make_packet(TYPE_ACK, seq)
-
-
-def make_nak(seq: int) -> bytes:
-    """Build a NAK packet for sequence number `seq`.
-
-    Args:
-        seq: Sequence number being negatively acknowledged.
-
-    Returns:
-        The serialized NAK packet bytes.
-    """
-
-    return make_packet(TYPE_NAK, seq)
-
-
-def is_ack(pkt: dict, expected_seq: int) -> bool:
-    """Return True if `pkt` is an ACK for `expected_seq` with valid checksum.
-
-    Args:
-        pkt: Decoded-packet dictionary returned by `decode_packet`.
-        expected_seq: Expected sequence number to match for ACKs.
-
-    Returns:
-        True when `pkt` is an ACK, checksum is valid and sequence matches.
-    """
-
-    return (
-        pkt["type"] == TYPE_ACK and
-        pkt["checksum_ok"] and
-        pkt["seq"] == expected_seq
-    )
-
-
-def is_nak(pkt: dict, expected_seq: int) -> bool:
-    """Return True if `pkt` is a NAK for `expected_seq` with valid checksum.
-
-    Args:
-        pkt: Decoded-packet dictionary returned by `decode_packet`.
-        expected_seq: Expected sequence number to match for NAKs.
-
-    Returns:
-        True when `pkt` is a NAK, checksum is valid and sequence matches.
-    """
-
-    return (
-        pkt["type"] == TYPE_NAK and
-        pkt["checksum_ok"] and
-        pkt["seq"] == expected_seq
-    )
+# helpers are provided by `utils.packet` (imported at module top)
 
 
 # ============================================================
@@ -163,13 +26,6 @@ def is_nak(pkt: dict, expected_seq: int) -> bool:
 
 class RDT21Sender:
     def __init__(self, local_addr, remote_addr, channel):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(local_addr)
-
-        self.remote_addr = remote_addr
-        self.channel = channel
-
-        self.seq = 0
         """Initialize an RDT 2.1 sender.
 
         Args:
@@ -177,6 +33,14 @@ class RDT21Sender:
             remote_addr: Remote UDP address tuple to send packets to.
             channel: Channel-like object exposing `send(packet, sock, addr)`.
         """
+
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(local_addr)
+
+        self.remote_addr = remote_addr
+        self.channel = channel
+
+        self.seq = 0
 
     def send(self, data: bytes):
         """Send `data` reliably using the RDT 2.1 alternating-bit protocol.
@@ -219,11 +83,6 @@ class RDT21Sender:
 
 class RDT21Receiver:
     def __init__(self, local_addr, app_deliver_callback, channel):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(local_addr)
-        self.app_deliver = app_deliver_callback
-        self.channel = channel
-        self.expected_seq = 0
         """Initialize an RDT 2.1 receiver.
 
         Args:
@@ -232,6 +91,12 @@ class RDT21Receiver:
                 valid DATA packet with expected sequence is received.
             channel: Channel-like object exposing `send(packet, sock, addr)`.
         """
+
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(local_addr)
+        self.app_deliver = app_deliver_callback
+        self.channel = channel
+        self.expected_seq = 0
 
     def loop(self):
         """Run the receiver loop forever for RDT 2.1.

@@ -1,99 +1,21 @@
 import socket
-import struct
 import threading
 
-
-# ============================================================
-# ===================== PACKET FORMAT =========================
-# ============================================================
-
-_struct_header = struct.Struct("!B B H")
-# ! = network byte order
-# B = type (1 byte)
-# B = seqnum (1 byte)
-# H = checksum (2 bytes)
-
-TYPE_DATA = 0
-TYPE_ACK  = 1
-TYPE_NAK  = 2
+from utils.packet import (
+    TYPE_DATA,
+    TYPE_ACK,
+    TYPE_NAK,
+    make_data_21 as make_data,
+    make_ack_21 as make_ack,
+    make_nak_21 as make_nak,
+    decode_packet_21 as decode_packet,
+    is_ack_21 as is_ack,
+    is_nak_21 as is_nak,
+)
 
 
-def compute_checksum(data: bytes) -> int:
-    total = 0
-    for b in data:
-        total = (total + b) & 0xFFFF
-    return (~total) & 0xFFFF
+# packet helpers are provided by `utils.packet` (rdt2.1/3.0 variants)
 
-
-def make_packet(pkt_type: int, seq: int, payload: bytes = b"") -> bytes:
-    """
-    Build unified rdt3.0 packet:
-        type (1B)
-        seqnum (1B)
-        checksum (2B)
-        payload (...)
-    Checksum is computed over: type + seq + payload
-    """
-    to_checksum = bytes([pkt_type, seq]) + payload
-    cs = compute_checksum(to_checksum)
-
-    return _struct_header.pack(pkt_type, seq, cs) + payload
-
-
-def decode_packet(raw: bytes):
-    """
-    Decode unified rdt3.0 packet.
-    Returns:
-        {
-            "type": ...,
-            "seq": int, # Incrementing sequence
-            "checksum_ok": bool,
-            "payload": bytes
-        }
-    """
-    pkt_type, seq, recv_cs = _struct_header.unpack(raw[:_struct_header.size])
-    payload = raw[_struct_header.size:]
-
-    calc_cs = compute_checksum(bytes([pkt_type, seq]) + payload)
-
-    return {
-        "type": pkt_type,
-        "seq": seq,
-        "checksum_ok": (recv_cs == calc_cs),
-        "payload": payload
-    }
-
-
-# ============================================================
-# ===================== HELPERS ==============================
-# ============================================================
-
-def make_data(seq: int, data: bytes) -> bytes:
-    return make_packet(TYPE_DATA, seq, data)
-
-
-def make_ack(seq: int) -> bytes:
-    return make_packet(TYPE_ACK, seq)
-
-
-def make_nak(seq: int) -> bytes:
-    return make_packet(TYPE_NAK, seq)
-
-
-def is_ack(pkt: dict, expected_seq: int) -> bool:
-    return (
-        pkt["type"] == TYPE_ACK and
-        pkt["checksum_ok"] and
-        pkt["seq"] == expected_seq
-    )
-
-
-def is_nak(pkt: dict, expected_seq: int) -> bool:
-    return (
-        pkt["type"] == TYPE_NAK and
-        pkt["checksum_ok"] and
-        pkt["seq"] == expected_seq
-    )
 
 # ============================================================
 # ======================= SENDER ==============================
@@ -101,14 +23,22 @@ def is_nak(pkt: dict, expected_seq: int) -> bool:
 
 class RDT30Sender:
     def __init__(self, local_addr, remote_addr, channel, timeout=2.0):
+        """Initialize an RDT 3.0 sender with timeout-based retransmission.
+
+        Args:
+            local_addr: Local UDP address tuple to bind to (host, port).
+            remote_addr: Remote UDP address tuple to send packets to.
+            channel: Channel-like object exposing `send(packet, sock, addr)`.
+            timeout: Timeout interval (seconds) for retransmission (default 2.0).
+        """
+
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(local_addr)
 
         self.remote_addr = remote_addr
         self.channel = channel
 
-        self.seq = 0 
-        
+        self.seq = 0
         self.timeout = timeout
         self._timer = None
         self._timeout_event = threading.Event()

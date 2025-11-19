@@ -1,6 +1,11 @@
+import sys
+import os
 import threading
 import time
 import socket
+
+# Add the parent directory to the path so imports work correctly
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.simulator import UnreliableChannel
 from fase1.rdt20 import RDT20Sender, RDT20Receiver
