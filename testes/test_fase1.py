@@ -270,6 +270,8 @@ def test_rdt20_teste_4():
     # 1. All messages were delivered at least once
     # 2. There were more messages delivered than sent (Correct because of the duplication in rdt 2.0)
     # 3. A retransmission happened at least once
+    print("")
+    print("RDT 2.0 TESTE 4. Registrar quantas retransmissões ocorreram")
     print("Retransmissions:", transmissions - qtt)
 
     assert contains_all(msgs, delivered)
@@ -456,7 +458,7 @@ def test_rdt21_test_4():
 
     overhead_bytes = total_sent_bytes - useful_bytes
 
-    print("\n=== RDT 2.1 OVERHEAD REPORT ===")
+    print("\nDRT 2.1 TESTE 4. Medir overhead (quantos bytes extras por mensagem útil)")
     print(f"Total useful payload bytes: {useful_bytes}")
     print(f"Total transmitted bytes: {total_sent_bytes}")
     print(f"Overhead bytes: {overhead_bytes}")
@@ -701,6 +703,8 @@ def test_rdt30_test_5():
     # Prints the number of retransmissions and then asserts that:
     # 1. All messages were delivered at least once
     # 2. A retransmission happened at least once
+    print("")
+    print("RDT 3.0 TESTE 5. Medir: Taxa de retransmissão e Throughput efetivo")
     print("Retransmissions:", transmissions - qtt)
     print(f"Retransmission Rate: {transmissions/qtt:.3g} retransmissions per transmission")
     print(f"Throughput(useful bytes/total time): {useful_bytes/total_time:.3g} B/s")
