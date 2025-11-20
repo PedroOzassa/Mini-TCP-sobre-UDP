@@ -90,23 +90,18 @@ class GBNSender:
         self.remote_addr = remote_addr
         self.channel = channel
 
-        # Sliding-window state
         self.base = 0
         self.nextseqnum = 0
         self.N = N
 
-        # Store sent but unACKed packets: seq -> bytes
         self.send_buffer = {}
 
-        # Timer infra
         self.timeout = timeout
         self._timer = None
         self._timeout_event = threading.Event()
 
-    # ---------------------------------------------------------------------
 
     def _start_timer(self):
-        # Only start for base packet
         self._timeout_event.clear()
         self._timer = threading.Timer(self.timeout, self._timer_expired)
         self._timer.start()
@@ -119,36 +114,28 @@ class GBNSender:
     def _timer_expired(self):
         self._timeout_event.set()
 
-    # ---------------------------------------------------------------------
-
     def send(self, data: bytes):
         """
         Application wants to send a single new message.
         Implement sliding-window logic.
         """
 
-        # Wait while window is full
         while (self.nextseqnum - self.base) >= self.N:
-            self._handle_incoming()   # process ACKs while waiting
+            self._handle_incoming()
 
         seq = self.nextseqnum & 0xFFFFFFFF
         pkt = make_data(seq, data)
 
-        # Store it
         self.send_buffer[seq] = pkt
 
-        # Send it
         self.channel.send(pkt, self.sock, self.remote_addr)
 
-        # If sending base packet, start timer
         if self.base == self.nextseqnum:
             self._start_timer()
 
         self.nextseqnum += 1
 
-        # After sending, process ACKs until the message is accepted
         while seq in self.send_buffer:
-            # Either process ACKs or timeout
             if self._timeout_event.is_set():
                 self._timeout_event.clear()
                 self._on_timeout()
@@ -156,7 +143,6 @@ class GBNSender:
 
             self._handle_incoming()
 
-    # ---------------------------------------------------------------------
 
     def _handle_incoming(self):
         self.sock.settimeout(0.05)
@@ -169,22 +155,18 @@ class GBNSender:
         if not pkt["checksum_ok"]:
             return
 
-        # Use your logic
         if not is_ack(pkt, self.base, self.nextseqnum):
             return
 
         ack = pkt["seq"]
 
-        # Slide window: base = ack + 1
         old_base = self.base
         self.base = ack + 1
 
-        # Remove acknowledged packets
         for s in list(self.send_buffer.keys()):
-            if self.base > s:        # acknowledged falls below new base
+            if self.base > s:
                 del self.send_buffer[s]
 
-        # Timer logic
         if self.base == self.nextseqnum:
             self._stop_timer()
         else:
@@ -192,19 +174,14 @@ class GBNSender:
             self._start_timer()
 
 
-    # ---------------------------------------------------------------------
-
     def _on_timeout(self):
         """Timeout: retransmit all packets in the window."""
-        # Retransmit packets base .. nextseqnum-1
         for s in sorted(self.send_buffer.keys()):
             self.channel.send(self.send_buffer[s], self.sock, self.remote_addr)
 
-        # Restart timer
         self._stop_timer()
         self._start_timer()
 
-    # ---------------------------------------------------------------------
 
 
 class GBNReceiver:
@@ -215,11 +192,9 @@ class GBNReceiver:
         self.app_deliver = app_deliver
         self.channel = channel
 
-        # Next in-order packet expected
         self.expectedseqnum = 0
 
     def start(self):
-        # Same style as your RDT20/21/30 receivers
         threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self):
@@ -227,33 +202,26 @@ class GBNReceiver:
             raw, addr = self.sock.recvfrom(2048)
             pkt = decode_packet(raw)
 
-            # Corrupted → send dup ACK for last good
             if not pkt["checksum_ok"]:
                 last_good = (self.expectedseqnum - 1) & 0xFFFFFFFF
                 ack = make_ack(last_good)
                 self.channel.send(ack, self.sock, addr)
                 continue
 
-            # Not data → ignore silently
             if pkt["type"] != TYPE_DATA:
                 continue
 
             seq = pkt["seq"]
 
-            # Correct in-order packet
             if seq == self.expectedseqnum:
-                # deliver to app
                 self.app_deliver(pkt["payload"])
 
-                # ACK(expectedseqnum)
                 ack = make_ack(self.expectedseqnum)
                 self.channel.send(ack, self.sock, addr)
 
-                # advance expected sequence number
                 self.expectedseqnum = (self.expectedseqnum + 1) & 0xFFFFFFFF
                 continue
 
-            # Out-of-order packet → send duplicate ACK for last good
             last_good = (self.expectedseqnum - 1) & 0xFFFFFFFF
             ack = make_ack(last_good)
             self.channel.send(ack, self.sock, addr)
