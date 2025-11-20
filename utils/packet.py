@@ -116,3 +116,51 @@ def is_nak_21(pkt: Dict, expected_seq: int) -> bool:
     return (
         pkt["type"] == TYPE_NAK and pkt["checksum_ok"] and pkt["seq"] == expected_seq
     )
+
+
+# -------------------- GBN (fase2) packet format --------------------
+_struct_header_gbn = struct.Struct("!B I H")
+
+
+def make_packet_gbn(pkt_type: int, seq: int, payload: bytes = b"") -> bytes:
+    """Build a GBN packet: [type(1B) | seq(4B) | checksum(2B) | payload]."""
+
+    seq_bytes = seq.to_bytes(4)
+    to_checksum = bytes([pkt_type]) + seq_bytes + payload
+    cs = compute_checksum(to_checksum)
+    return _struct_header_gbn.pack(pkt_type, seq, cs) + payload
+
+
+def decode_packet_gbn(raw: bytes) -> Dict:
+    """Decode a GBN packet and return a dict with type/seq/checksum/payload."""
+
+    pkt_type, seq, recv_cs = _struct_header_gbn.unpack(raw[: _struct_header_gbn.size])
+    payload = raw[_struct_header_gbn.size :]
+    calc_cs = compute_checksum(bytes([pkt_type]) + seq.to_bytes(4) + payload)
+
+    return {
+        "type": pkt_type,
+        "seq": seq,
+        "checksum_ok": (recv_cs == calc_cs),
+        "payload": payload,
+    }
+
+
+def make_data_gbn(seq: int, data: bytes) -> bytes:
+    return make_packet_gbn(TYPE_DATA, seq, data)
+
+
+def make_ack_gbn(seq: int) -> bytes:
+    return make_packet_gbn(TYPE_ACK, seq)
+
+
+def is_ack_gbn(pkt: Dict, base: int, nextseqnum: int) -> bool:
+    """Return True if pkt is a valid ACK within [base, nextseqnum)."""
+
+    if pkt["type"] != TYPE_ACK:
+        return False
+
+    if not pkt["checksum_ok"]:
+        return False
+
+    return base <= pkt["seq"] < nextseqnum
